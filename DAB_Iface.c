@@ -855,14 +855,8 @@ __attribute__((ramfunc)) inline void DAB_ManualISR(void)
                 // Ramp phase shift
                 float diretion;
                 direction = (target_theta - dab_state.theta) / abs(target_theta - dab_state.theta)
-                if(dab_state.pi.Ymax != target_theta){
-                    dab_state.pi.Ymax += diretion * DAB_RAMP_THETA_STEP;
-                    dab_state.pi.Ymin -= direction * DAB_RAMP_THETA_STEP;
-                }
-                if(dab_state.theta > dab_state.pi.Ymax){
-                    dab_state.theta = dab_state.pi.Ymax;
-                } else if(dab_state.theta < dab_state.pi.Ymin){
-                    dab_state.theta = dab_state.pi.Ymin;
+                if(dab_state.theta != target_theta){
+                    dab_state.theta += diretion * DAB_RAMP_THETA_STEP;
                 }
             }
 
