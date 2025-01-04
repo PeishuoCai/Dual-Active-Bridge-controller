@@ -420,6 +420,8 @@ void DAB_Shutdown(void);
 
 void DAB_enablePWM(void);
 
+void DAB_enablePWM_simultaneous(void);
+
 void DAB_disablePWM(void);
 
 bool DAB_clearFaults(void);
@@ -435,6 +437,11 @@ void DAB_clearTrip_ISEC_OC(void);
 void DAB_clearTrip_IPRIM_OC(void);
 bool DAB_getTrip_ISEC_OC(void);
 bool DAB_getTrip_IPRIM_OC(void);
+
+void DAB_Running(void);
+void DAB_GetReadings(void);
+void DAB_ManualPhaseShift(float desired_theta);
+
 
 /**
  * Should be called periodically, but not in an ISR

@@ -8,6 +8,7 @@
 //
 //
 #include "DAB_Iface.h"
+#include <stdio.h>
 
 
 //2*L*Co*fn/N * 4pi*f_bw
@@ -26,6 +27,10 @@
 
 //uint32_t PS_DAB_WD_counter;
 //
+char curmode = "debug";
+float target_theta = 0;
+
+
 const float adcscalerDAB = 1/ADC_SCALER_DAB;
 const float g_ISEC = 1/G_ISEC;
 const float g_TEMP = 1/G_TEMP;
@@ -48,6 +53,7 @@ static inline HAL_Status_t DAB_checkTemperatureProtection(void);
 
 #define DAB_MAX_DEADBAND_DELAY 16380
 #define DAB_STD_DEADBAND_DELAY 20
+#define DAB_DEBUG_DEADBAND_DELAY 0
 static inline void DAB_setDeadband(uint32_t delay);
 static inline void DAB_forceTrip(void);
 
@@ -554,6 +560,21 @@ void DAB_Shutdown(void){
     }
 }
 
+void DAB_Running(void){
+    if (curmode == "debug" && dab_state.stat DABState_StartUp){
+        dab_state.state = DABState_Running;
+    }
+}
+
+void DAB_GetReadings(void){
+    printf("IPRIM: %.4f\n", dab_state.meas.IPRIM)
+    printf("ISEC: %.4f\n", dab_state.meas.ISEC)
+    printf("VSEC: %.4f\n", dab_state.meas.VSEC)
+    printf("IPRIM_TANK: %.4f\n", dab_state.meas.IPRIM_TANK)
+    printf("ISEC_TANK: %.4f\n", dab_state.meas.ISEC_TANK)
+    printf("VPRIM: %.4f\n", dab_state.meas.VPRIM)
+}
+
 
 void DAB_SetVref(float32_t vref)
 {
@@ -587,6 +608,14 @@ void DAB_enablePWM(void){
     DAB_setDeadband(dab_state.deadband);
 }
 
+void DAB_enablePWM_simultaneous(void){
+    dab_state.deadband = DAB_DEBUG_DEADBAND_DELAY;
+    DAB_setDeadband(dab_state.deadband);
+}
+
+void DAB_ManualPhaseShift(float desired_theta){
+    target_theta = desired_theta
+}
 
 static inline void DAB_forceTrip(void){
     EPWM_forceTripZoneEvent(DAB_PRIM1_BASE, EPWM_TZ_FORCE_EVENT_OST);
@@ -674,6 +703,7 @@ __attribute__((ramfunc)) inline void DAB_ControlISR(void)
                 //Set standard deadtime
                 DAB_enablePWM();
 
+                
                 // Ramp phase shift
                 if(dab_state.pi.Ymax < thetaMax){
                     dab_state.pi.Ymax += DAB_RAMP_THETA_STEP;
@@ -770,9 +800,122 @@ __attribute__((ramfunc)) inline void DAB_ControlISR(void)
 
 }
 
-__attribute__((ramfunc)) __interrupt void INT_DAB_CTRL_ISR(void){
+// potential code to debug through UART
+// int fputc(int ch, FILE *f)
+// {
+//     while (SciaRegs.SCIFFTX.bit.TXFFST != 0) {} // Wait for space in TX buffer
+//     SciaRegs.SCITXBUF.all = ch;
+//     return ch;
+// }
 
-    DAB_ControlISR();
+
+#pragma FUNC_ALWAYS_INLINE(DAB_ManualISR)
+__attribute__((ramfunc)) inline void DAB_ManualISR(void)
+{
+    // ISR to handle debug functionalities
+
+    // in case of start up, we handle it like normally
+    switch(dab_state.state){
+        case DABState_StartUp:
+            // initial test case want to have simultaneous PWM's outputted without worrying about state of FETs
+            printf("starting zero deadband -- make sure input is zero-current")
+            //Ramp deadtime on primary
+            if(dab_state.deadband>DAB_DEBUG_DEADBAND_DELAY)
+            {
+                DAB_setDeadband(dab_state.deadband);
+                dab_state.deadband -= 1;
+            }
+            else
+            {
+                DAB_enablePWM_simultaneous();
+                if (dab_state.theta != 0){
+                    dab_state.theta = 0;
+                }
+                // this should start PWM's without delay, since phase shift is 0
+            }
+
+            DAB_checkOverCurrentProtection();
+            DAB_checkVoltageProtection();
+            break;
+
+        case DABState_Running:
+            // right now it's running simultaneous PWM
+
+            //Ramp deadtime on primary
+            if(dab_state.deadband>DAB_STD_DEADBAND_DELAY)
+            {
+                DAB_setDeadband(dab_state.deadband);
+                dab_state.deadband -= 1;
+            }
+            else
+            {
+                //Set standard deadtime
+                DAB_enablePWM();
+
+                // Ramp phase shift
+                float diretion;
+                direction = (target_theta - dab_state.theta) / abs(target_theta - dab_state.theta)
+                if(dab_state.pi.Ymax != target_theta){
+                    dab_state.pi.Ymax += diretion * DAB_RAMP_THETA_STEP;
+                    dab_state.pi.Ymin -= direction * DAB_RAMP_THETA_STEP;
+                }
+                if(dab_state.theta > dab_state.pi.Ymax){
+                    dab_state.theta = dab_state.pi.Ymax;
+                } else if(dab_state.theta < dab_state.pi.Ymin){
+                    dab_state.theta = dab_state.pi.Ymin;
+                }
+            }
+
+            DAB_checkOverCurrentProtection();
+            DAB_checkVoltageProtection();
+            break;
+        
+        case DABState_ShutDown:
+            if(dab_state.theta > thetaMin + DAB_RAMP_THETA_STEP){
+                dab_state.theta -= DAB_RAMP_THETA_STEP;
+            } else if (dab_state.theta < -thetaMin - DAB_RAMP_THETA_STEP){
+                dab_state.theta += DAB_RAMP_THETA_STEP;
+            } else {
+                dab_state.theta = -thetaMin;
+                dab_state.shutdown_timer ++;
+                if(dab_state.shutdown_timer > DAB_SHUTDOWN_WAIT_COUNT){
+                    // back to idle
+                    dab_state.state = DABState_Idle;
+                    DAB_disablePWM();
+                }
+            }
+            // ramp to 0 phase shift, run for ~1 second
+            DAB_checkOverCurrentProtection();
+            DAB_checkVoltageProtection();
+            break;
+
+        default:
+            dab_state.theta = thetaMin;
+            break;
+    // Update operating frequency
+    EPWM_setTimeBasePeriod(DAB_PRIM1_BASE, dab_state.pwmPeriod);
+    EPWM_setCounterCompareValue(DAB_PRIM1_BASE, EPWM_COUNTER_COMPARE_A, dab_state.CMPAVal);
+
+    //Update phase shift registers
+    DAB_setPhaseShift_Base(DAB_PRIM2_BASE, dab_state.theta_pri, dab_state.CMPAVal, dab_state.pwmPeriod);
+    DAB_setPhaseShift_Base(DAB_SEC1_BASE, dab_state.theta, dab_state.CMPAVal, dab_state.pwmPeriod);
+    DAB_setPhaseShift_Base(DAB_SEC2_BASE, dab_state.theta_sec, dab_state.CMPAVal, dab_state.pwmPeriod);
+
+    //DAB_setPhaseShift(dab_state.theta);
+    // Set global one shot latch (enables DAB_PRIM1 sync out oneshot)
+    EPWM_setGlobalLoadOneShotLatch(DAB_PRIM1_BASE);
+    EPWM_startOneShotSync(DAB_PRIM1_BASE);
+
+}
+__attribute__((ramfunc)) __interrupt void INT_DAB_CTRL_ISR(void){
+    if (curmode == "default"){
+        DAB_ControlISR();
+    }
+    else if (curmode == "debug") {
+        DAB_ManualISR();
+    }
+
+    
 
 }
 
